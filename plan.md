@@ -320,10 +320,13 @@ Implemented:
 - OpenAI tool calling wired through the provider adapter.
 - Tool calls normalized into internal `ToolCall` objects.
 - Tool results sent back to OpenAI for the final response.
+- Built-in `glob` tool for structured workspace file discovery.
+- Configurable `.agentignore` support using gitignore-style patterns.
+- Glob traversal prunes ignored directories and blocks paths outside the workspace.
 
 Next step:
 
-- Add a read-only file inspection tool like `list_files` or `read_file`.
+- Add a read-only `read_file` tool.
 
 ## Learning Checklist
 

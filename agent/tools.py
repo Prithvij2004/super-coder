@@ -65,8 +65,9 @@ class ToolRegistry:
 
 
 def create_tool_registry(workspace: Path) -> ToolRegistry:
-    from agent.builtin_tools import create_bash_tool
+    from agent.builtin_tools import create_bash_tool, create_glob_tool
 
     registry = ToolRegistry()
     registry.register(create_bash_tool(workspace))
+    registry.register(create_glob_tool(workspace))
     return registry

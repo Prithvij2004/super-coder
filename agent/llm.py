@@ -31,7 +31,11 @@ def ask_model(task: str, tool_registry: ToolRegistry) -> str:
             input=[
                 {
                     "role": "system",
-                    "content": "You are a minimal coding agent. Use available tools when they help answer the user's task. Do not edit files yet.",
+                    "content": (
+                        "You are a minimal coding agent. Use available tools when they "
+                        "help answer the user's task. Use glob for file discovery so "
+                        ".agentignore exclusions are honored. Do not edit files yet."
+                    ),
                 },
                 {"role": "user", "content": task},
             ],

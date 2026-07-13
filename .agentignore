@@ -1,0 +1,15 @@
+# Gitignore-style patterns excluded from agent file searches.
+# The .git directory is always ignored and does not need to be listed here.
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+node_modules/
+.DS_Store

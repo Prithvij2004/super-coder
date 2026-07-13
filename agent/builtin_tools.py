@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
+from collections.abc import Iterator
+from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import Path
 
+from pathspec import PathSpec
 from pydantic import BaseModel, Field
 
+from agent.ignore import IGNORE_FILE_NAME, is_ignored, load_ignore_spec
 from agent.tools import ToolDefinition, ToolResult
 
 
 MAX_COMMANDS = 2
 MAX_OUTPUT_CHARS = 20_000
+MAX_GLOB_RESULTS = 200
 COMMAND_OPERATORS = {"&&", "||", ";", "|"}
 BLOCKED_COMMANDS = {
     "sudo",
@@ -44,9 +51,155 @@ class BashInput(BaseModel):
     timeout_seconds: int = Field(default=30, ge=1, le=120)
 
 
+class GlobInput(BaseModel):
+    pattern: str = Field(min_length=1)
+
+
+def create_glob_tool(workspace: Path) -> ToolDefinition:
+    workspace = workspace.resolve()
+    try:
+        ignore_spec = load_ignore_spec(workspace)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise RuntimeError(f"Could not load {IGNORE_FILE_NAME}: {error}") from error
+
+    def run_glob(input: BaseModel) -> ToolResult:
+        glob_input = GlobInput.model_validate(input)
+        pattern_path = Path(glob_input.pattern)
+        if pattern_path.is_absolute() or ".." in pattern_path.parts:
+            return ToolResult(
+                ok=False,
+                output="",
+                error="Glob pattern must stay inside the workspace",
+            )
+
+        matches: list[str] = []
+        truncated = False
+        try:
+            directory_only = glob_input.pattern.endswith("/")
+            pattern_parts = pattern_path.parts
+            for candidate in _iter_workspace_paths(workspace, ignore_spec):
+                relative_path = candidate.relative_to(workspace)
+                if directory_only and not candidate.is_dir():
+                    continue
+                if not _matches_glob(relative_path.parts, pattern_parts):
+                    continue
+
+                display_path = relative_path.as_posix()
+                if candidate.is_dir():
+                    display_path += "/"
+                matches.append(display_path)
+
+                if len(matches) > MAX_GLOB_RESULTS:
+                    matches.pop()
+                    truncated = True
+                    break
+        except (OSError, ValueError) as error:
+            return ToolResult(ok=False, output="", error=f"Glob failed: {error}")
+
+        if not matches:
+            return ToolResult(ok=True, output="No paths matched the pattern")
+
+        output = "\n".join(sorted(matches))
+        if truncated:
+            output += f"\n... results limited to {MAX_GLOB_RESULTS} paths ..."
+        return ToolResult(ok=True, output=output)
+
+    return ToolDefinition(
+        name="glob",
+        description=(
+            "Find workspace paths matching a glob pattern such as '**/*.py'. "
+            "Paths configured in .agentignore are excluded."
+        ),
+        input_model=GlobInput,
+        run=run_glob,
+    )
+
+
+def _iter_workspace_paths(workspace: Path, ignore_spec: PathSpec) -> Iterator[Path]:
+    for current_path, directory_names, file_names in os.walk(
+        workspace,
+        followlinks=False,
+    ):
+        current_directory = Path(current_path)
+        directory_names.sort()
+        file_names.sort()
+
+        included_directories: list[str] = []
+        for name in directory_names:
+            candidate = current_directory / name
+            relative_path = candidate.relative_to(workspace)
+            if not _is_searchable_path(
+                workspace,
+                candidate,
+                relative_path,
+                ignore_spec,
+                is_directory=True,
+            ):
+                continue
+            included_directories.append(name)
+            yield candidate
+        directory_names[:] = included_directories
+
+        for name in file_names:
+            candidate = current_directory / name
+            relative_path = candidate.relative_to(workspace)
+            if _is_searchable_path(
+                workspace,
+                candidate,
+                relative_path,
+                ignore_spec,
+                is_directory=False,
+            ):
+                yield candidate
+
+
+def _is_searchable_path(
+    workspace: Path,
+    candidate: Path,
+    relative_path: Path,
+    ignore_spec: PathSpec,
+    *,
+    is_directory: bool,
+) -> bool:
+    try:
+        candidate.resolve().relative_to(workspace)
+    except (OSError, ValueError):
+        return False
+    return not is_ignored(
+        ignore_spec,
+        relative_path,
+        is_directory=is_directory,
+    )
+
+
+def _matches_glob(path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
+    @lru_cache(maxsize=None)
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+
+        pattern_part = pattern_parts[pattern_index]
+        if pattern_part == "**":
+            return match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts)
+                and match(path_index + 1, pattern_index)
+            )
+
+        return path_index < len(path_parts) and fnmatchcase(
+            path_parts[path_index],
+            pattern_part,
+        ) and match(
+            path_index + 1,
+            pattern_index + 1,
+        )
+
+    return match(0, 0)
+
+
 def create_bash_tool(workspace: Path) -> ToolDefinition:
     def run_bash(input: BaseModel) -> ToolResult:
         bash_input = BashInput.model_validate(input)
+        logging.info("Bash command: %s", bash_input.command)
         error = validate_bash_command(bash_input.command)
         if error:
             return ToolResult(ok=False, output="", error=error)

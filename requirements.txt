@@ -1,3 +1,4 @@
 openai
+pathspec
 pydantic
 python-dotenv

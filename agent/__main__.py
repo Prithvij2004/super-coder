@@ -27,7 +27,10 @@ def main() -> None:
     configure_logging()
 
     workspace = Path.cwd()
-    tool_registry = create_tool_registry(workspace)
+    try:
+        tool_registry = create_tool_registry(workspace)
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
 
     logging.info("Task: %s", args.task)
     logging.info("Workspace: %s", workspace)
